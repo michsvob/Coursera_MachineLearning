@@ -1,0 +1,116 @@
+---
+title: "Human activity recognition"
+author: "Michal Svoboda"
+date: "April 3, 2017"
+output: html_document
+---
+
+# Task
+The data we have comes from a study where participants equiped with sensors were asked to perform an exercise sometimes correctly and other some times by doing distinct errors. The task is to use the data collected from the sensors and identify the modes of doing the excercise.
+
+# Data preparation
+Some data preparation is needed since there is lot of NA values in the data set, some numeric values are encoded as strings and some of the columns (participant names, times etc.) are not useful predictors.  
+As it turned out, the columns that contained NAs always contained only small amount of valid data, so it was possible to remove them. 
+For sake of saving computation power for the model creation I decided to partition the data into training set containing only 10 % of the original training set and a validation set containing the rest - 90 %.
+
+
+```{r data.preparation, message=FALSE}
+library(caret)
+library(ggplot2)
+library(dplyr)
+
+#download the data and load it to R
+# download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+#               method = "auto",
+#               destfile = "training.csv")
+# 
+# download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+#               method = "auto",
+#               destfile = "testing.csv")
+training<-read.csv("training.csv",stringsAsFactors = F)
+testing<-read.csv("testing.csv",stringsAsFactors = F)
+
+#convert outcome to factor
+training$classe<-as.factor(training$classe)
+
+#remove variables that are not useful as predictors
+training<-training %>% select(-X,-user_name,-raw_timestamp_part_1,-raw_timestamp_part_2,
+                              -cvtd_timestamp,-new_window,-num_window)
+
+#convert characters to numerics
+training[,sapply(training,class)=="character"]<-sapply(training[,sapply(training,class)=="character"],as.numeric)
+
+#get number of NAs in the columns and leave only the columns without NAs
+naSums<-sapply(training,function(x){sum(is.na(x))}) 
+naSumsTesting<-sapply(testing,function(x){sum(is.na(x))})
+training<-training[,naSums==0] 
+testing<-testing[,naSumsTesting==0]
+
+#partition the data into training set for model creation and validation set for cross validation
+trainP1<-createDataPartition(training$classe,p=.1,list=FALSE)
+tr1<-training[trainP1,] #training 
+tr2<-training[-trainP1,] #validation
+```
+
+# Model selection
+Several strategies have been used to find the best model, that is the one having the highest accuracy on the validation set marked tr2 (that means the highest portion of correctly classified samples):
+
+* m1: Model using pre processing with principal component analysis, leaving 3 most significant principial components. Leaving just 3 of them should reduce computation time, reduce overfitting and hopefully also reduce out of sample error on validation and testing set. Random forest algorithm is used on the pre-processed data. The accuracy on training set was only 52 %, so the model was rejected.
+```{r m1}
+set.seed(1000)
+pp<-preProcess(tr1,method="pca",pcaComp = 3) #calculate PCA pre-processing method (plus centering and scaling)
+tr1PP<-predict(pp,tr1) #apply pre-processing algorithm to training set
+m1<-train(y=tr1PP$classe,x=tr1PP %>% select(-classe),method="rf") #create model from pre processed data using random forests
+m1$results
+rm(m1)
+```
+
+* m2: Same as m1, but now default settings for number of PCA components to keep were used. The default number of PCA components should capture 95 % of the variance. In this case 26 components were needed. The accuracy on the training set was 80 %. The model was then applied on the validation set. This time the accuracy was 87 %.
+
+```{r m2}
+set.seed(1000)
+pp<-preProcess(tr1,method="pca")
+tr1PP<-predict(pp,tr1)
+m2<-train(y=tr1PP$classe,x=tr1PP %>% select(-classe),method="rf")
+m2$results
+
+tr2PP<-predict(pp,tr2) #apply pre processing on validation set
+confusionMatrix(data=predict(m2,tr2PP %>% select(-classe)),reference=tr2PP$classe) #predict with model m2 on the validation set, show results
+rm(m2)
+```
+
+* m3: This time no pre-processing was used and the predictors were selected based on exploratory scatter plots comparing pairs of variables. The variables were selected based on how separated the categories looked like. The resulting model has an accuracy of 89 % on the validation set. The confusion matrix has shown that differentiating class B is most challenging.
+
+
+```{r m3}
+set.seed(1000)
+
+# manipulate is commented out because it cannot be included in html
+# library(manipulate)
+# manipulate(
+#   ggplot(data=tr1,
+#          aes_string(names(tr1)[var1],names(tr1)[var2],color=("classe")))+
+#     geom_point(size=.3),
+#   var1=slider(1,53,initial=8,step=1),
+#   var2=slider(1,53,initial=1,step=1))
+
+ggplot(data=tr1, aes_string(names(tr1)[1],names(tr1)[8],color=("classe")))+
+    geom_point(size=.3)
+
+m3<-train(y=tr1$classe,x=tr1 %>% select(roll_belt,accel_belt_x,magnet_dumbbell_y,yaw_belt,pitch_forearm,accel_dumbbell_x,magnet_forearm_z),method="rf")
+confusionMatrix(data=predict(m3,tr2 %>% select(-classe)),reference=tr2$classe)
+#89
+```
+
+Though better models than m3 could be found by selecting different subset of predictors, the resulting accuracy of 89 % is reasonable for our purposes. The accuracy of m3 could also be improved using a greater portion of the given training set as a training set for the model creation and smaller portion for the validation data set (like 60 % training and 40 % validation), but in this case the processing times would be longer. Since we achieved 89 % accuracy on a validation set, which was 90 % of the initial given training set, our model should be quite robust. Indeed, the confidence interval on the validation set was (0.8872, 0.8918).
+
+# Applying final model to testing dataset
+The predicted values are shown below. If the neccessary score in the Coursera quiz were 80 %, that means min 16 correct out of 20, then the probability that we will fail in this test can be estimated from binomial distribution function and turns out to be approximately 6 % (of course some assumptions apply- i.e. that test set would be identically distributed as validation set).
+
+```{r testing}
+predict(m3,testing)
+pbinom(15,20,.89) #probability of classifying correctly less than 16 values out of 20 
+```
+
+# Conclusion
+It has been shown, that classification of the modes of excercise is possible with a reasonable accuracy given the predictors we have using the proposed model based on random forests algorithm. The model proved to be stable using the validation set of the size of 90 % of the data. The probability of failing to score at least 16 points out of 20 in the Coursera validation quiz was estimated to be about 6 %.
